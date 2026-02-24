@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Compact Panel Log Export</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Compact Panel Datalog Downloader</h1>
+      <p class="subtitle">
+        FOR USE WITH AFEX FIRE SUPPRESSION SYSTEMS CPP.
+      </p>
+
+      <section id="compatWarning" class="compat-warning" hidden>
+        This browser is not compatible with Web Serial. Please use the latest
+        <strong>Microsoft Edge</strong> or <strong>Google Chrome</strong>.
+      </section>
+
+      <section class="controls">
+        <!-- <div class="control-row">
+          <label for="baudRate">Baud Rate</label>
+          <input id="baudRate" type="number" value="115200" min="300" step="1" />
+        </div> -->
+
+        <div class="button-row">
+          <button id="connectBtn">Connect to CPP</button>
+          <button id="disconnectBtn" disabled>Disconnect</button>
+          <button id="getLogBtn" disabled>Get Log</button>
+          <button id="clearBtn">Clear View</button>
+          <button id="downloadBtn" disabled>Download Log</button>
+          <button id="refreshBtn" disabled>Refresh</button>
+        </div>
+
+        <div class="status-row">
+          <strong>Status:</strong>
+          <span id="statusText">Disconnected</span>
+        </div>
+
+        <div class="status-row"id="debugSection">
+          <label for="debugToggle">
+            <input id="debugToggle" type="ch`eckbox" /> Enable Debug Terminal
+          </label>
+        </div>
+      </section>
+
+      <section class="information">
+
+        <div class="serial-number-row">
+            <strong>Serial Number: </strong><span id="serialNumber">N/A</span>
+            <strong>Working Hours: </strong><span id="workingHours">N/A</span>
+            <strong>F/W: </strong><span id="firmwareVersion">N/A</span>
+            <strong>H/W: </strong><span id="hardwareVersion">N/A</span>
+            <strong>Delay: </strong><span id="delay">N/A</span>
+        </div>
+      </section>
+
+      <section id="downloadProgress" class="download-progress" hidden>
+        <div class="download-progress-head">
+          <strong>Downloading Log</strong>
+          <span id="downloadProgressText">0%</span>
+        </div>
+        <progress id="downloadProgressBar" max="100" value="0"></progress>
+      </section>
+
+      <section id="debugTerminalSection" class="debug-terminal" hidden>
+        <div class="download-progress-head">
+          <strong>Debug Terminal</strong>
+          <span>For debugging only</span>
+        </div>
+        <div class="debug-input-row">
+          <input id="debugCommandInput" type="text" placeholder="Type custom command" />
+          <button id="debugSendBtn" disabled>Send</button>
+          <button id="debugClearBtn" disabled>Clear</button>
+        </div>
+        <pre id="debugTerminalOutput" aria-live="polite"></pre>
+      </section>
+
+      <section class="log-section">
+        <h2>Live Log Output</h2>
+        <pre id="logOutput" aria-live="polite"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

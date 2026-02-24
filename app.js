@@ -1,0 +1,763 @@
+const MAX_UI_CHARS = 500_000;
+
+const COMMAND_DELAY_MS = 20;
+const LOG_TRANSFER_IDLE_MS = 2000;
+
+const connectBtn = document.getElementById("connectBtn");
+const disconnectBtn = document.getElementById("disconnectBtn");
+const getLogBtn = document.getElementById("getLogBtn");
+const clearBtn = document.getElementById("clearBtn");
+const downloadBtn = document.getElementById("downloadBtn");
+const refreshBtn = document.getElementById("refreshBtn");
+const debugToggle = document.getElementById("debugToggle");
+const debugTerminalSection = document.getElementById("debugTerminalSection");
+const debugCommandInput = document.getElementById("debugCommandInput");
+const debugSendBtn = document.getElementById("debugSendBtn");
+const debugClearBtn = document.getElementById("debugClearBtn");
+const debugTerminalOutput = document.getElementById("debugTerminalOutput");
+const baudRateInput = document.getElementById("baudRate");
+const statusText = document.getElementById("statusText");
+const workingHoursText = document.getElementById("workingHours");
+const serialNumberText = document.getElementById("serialNumber");
+const firmwareVersionText = document.getElementById("firmwareVersion");
+const hardwareVersionText = document.getElementById("hardwareVersion");
+const delayText = document.getElementById("delay");
+const logOutput = document.getElementById("logOutput");
+const compatWarning = document.getElementById("compatWarning");
+const informationSection = document.querySelector(".information");
+const downloadProgressSection = document.getElementById("downloadProgress");
+const downloadProgressBar = document.getElementById("downloadProgressBar");
+const downloadProgressText = document.getElementById("downloadProgressText");
+
+const COMPACT_PANEL_PLUS_FILTER = {
+  usbVendorId: 1155,
+  usbProductId: 22336
+};
+
+let port = null;
+let reader = null;
+let keepReading = false;
+let captureBuffer = "";
+let isConnected = false;
+let responseBuffer = "";
+let logFilterCarry = "";
+let autoDownloadArmed = false;
+let logTransferStarted = false;
+let logDownloadIdleTimer = null;
+let progressLineCarry = "";
+let transferStartIndex = null;
+let transferCurrentIndex = null;
+let debugTerminalEnabled = false;
+let debugTerminalBuffer = "";
+const isSerialSupported = "serial" in navigator;
+
+const MAX_DEBUG_CHARS = 120_000;
+
+function setDebugTerminalVisibility(visible) {
+  if (!debugTerminalSection) {
+    return;
+  }
+
+  debugTerminalSection.hidden = !visible;
+}
+
+function refreshDebugControls() {
+  const canUse = debugTerminalEnabled && isConnected && isSerialSupported;
+  if (debugSendBtn) {
+    debugSendBtn.disabled = !canUse;
+  }
+
+  if (debugClearBtn) {
+    debugClearBtn.disabled = !debugTerminalEnabled;
+  }
+
+  if (debugCommandInput) {
+    debugCommandInput.disabled = !debugTerminalEnabled;
+  }
+}
+
+function appendToDebugTerminal(text) {
+  if (!debugTerminalEnabled || !text) {
+    return;
+  }
+
+  debugTerminalBuffer += text;
+  if (debugTerminalBuffer.length > MAX_DEBUG_CHARS) {
+    debugTerminalBuffer = debugTerminalBuffer.slice(debugTerminalBuffer.length - MAX_DEBUG_CHARS);
+  }
+
+  if (debugTerminalOutput) {
+    debugTerminalOutput.textContent = debugTerminalBuffer;
+    debugTerminalOutput.scrollTop = debugTerminalOutput.scrollHeight;
+  }
+}
+
+function clearDebugTerminal() {
+  debugTerminalBuffer = "";
+  if (debugTerminalOutput) {
+    debugTerminalOutput.textContent = "";
+  }
+}
+
+function setDebugTerminalEnabled(enabled) {
+  debugTerminalEnabled = enabled;
+  setDebugTerminalVisibility(enabled);
+  refreshDebugControls();
+
+  if (enabled) {
+    appendToDebugTerminal("[Debug terminal enabled]\n");
+    return;
+  }
+
+  clearDebugTerminal();
+}
+
+async function sendCustomDebugCommand() {
+  if (!debugTerminalEnabled || !port?.writable) {
+    return;
+  }
+
+  const raw = debugCommandInput?.value?.trim() ?? "";
+  if (!raw) {
+    return;
+  }
+
+  const writer = port.writable.getWriter();
+  try {
+    const command = raw.endsWith("\r\n") ? raw : `${raw}\r\n`;
+    const data = new TextEncoder().encode(command);
+    await writer.write(data);
+    appendToDebugTerminal(`[TX] ${raw}\n`);
+    debugCommandInput.value = "";
+  } catch (error) {
+    appendToDebugTerminal(`[TX ERROR] ${error.message}\n`);
+    setStatus(`Write failed: ${error.message}`);
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+function setDownloadProgressVisibility(visible) {
+  if (!downloadProgressSection) {
+    return;
+  }
+
+  downloadProgressSection.hidden = !visible;
+}
+
+function setDownloadProgress(percent, text) {
+  if (downloadProgressBar) {
+    downloadProgressBar.value = percent;
+  }
+
+  if (downloadProgressText) {
+    downloadProgressText.textContent = text;
+  }
+}
+
+function resetDownloadProgressState() {
+  progressLineCarry = "";
+  transferStartIndex = null;
+  transferCurrentIndex = null;
+  setDownloadProgress(0, "0%");
+}
+
+function updateDownloadProgressFromLog(text) {
+  if (!autoDownloadArmed || !text) {
+    return;
+  }
+
+  const combined = progressLineCarry + text;
+  const lines = combined.split(/\r?\n/);
+  progressLineCarry = lines.pop() ?? "";
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    if (trimmed.includes("@END OF LOGS;")) {
+      setDownloadProgress(100, "100%");
+      finishAutoDownloadIfReady();
+      continue;
+    }
+
+    const entryMatch = trimmed.match(/^(\d+),/);
+    if (!entryMatch) {
+      continue;
+    }
+
+    const entryIndex = Number(entryMatch[1]);
+    if (!Number.isFinite(entryIndex) || entryIndex <= 0) {
+      continue;
+    }
+
+    if (transferStartIndex === null) {
+      transferStartIndex = entryIndex;
+    }
+
+    transferCurrentIndex = entryIndex;
+
+    if (transferStartIndex > 0) {
+      const total = transferStartIndex;
+      const completed = Math.min(total, Math.max(0, total - transferCurrentIndex + 1));
+      const percent = Math.min(100, Math.round((completed / total) * 100));
+      setDownloadProgress(percent, `${percent}% (${completed}/${total})`);
+    }
+  }
+}
+
+function clearAutoDownloadTimer() {
+  if (logDownloadIdleTimer) {
+    clearTimeout(logDownloadIdleTimer);
+    logDownloadIdleTimer = null;
+  }
+}
+
+function finishAutoDownloadIfReady() {
+  clearAutoDownloadTimer();
+
+  if (!autoDownloadArmed) {
+    return;
+  }
+
+  autoDownloadArmed = false;
+  setDownloadProgressVisibility(false);
+
+  if (logTransferStarted && captureBuffer.length > 0) {
+    setStatus("Log transfer complete.");
+    downloadLog();
+    return;
+  }
+
+  setStatus("Log request finished. No log data received.");
+}
+
+function scheduleAutoDownloadCheck() {
+  if (!autoDownloadArmed) {
+    return;
+  }
+
+  clearAutoDownloadTimer();
+  logDownloadIdleTimer = setTimeout(() => {
+    finishAutoDownloadIfReady();
+  }, LOG_TRANSFER_IDLE_MS);
+}
+
+function isCompactPanelPlusPort(serialPort) {
+  const info = serialPort?.getInfo?.();
+  return (
+    info?.usbVendorId === COMPACT_PANEL_PLUS_FILTER.usbVendorId &&
+    info?.usbProductId === COMPACT_PANEL_PLUS_FILTER.usbProductId
+  );
+}
+
+function setStatus(text) {
+  statusText.textContent = text;
+}
+function setWorkingHours(hours) {
+    workingHoursText.textContent = hours;
+}
+function setSerialNumber(serial) {
+    serialNumberText.textContent = serial;
+}
+function setFirmwareVersion(version) {
+    firmwareVersionText.textContent = version;
+}
+function setHardwareVersion(version) {
+    hardwareVersionText.textContent = version;
+}
+function setDelay(delay){
+    delayText.textContent = delay;
+}
+
+function resetInfoValues() {
+  setWorkingHours("N/A");
+  setSerialNumber("N/A");
+  setFirmwareVersion("N/A");
+  setHardwareVersion("N/A");
+  setDelay("N/A");
+}
+
+function setInformationVisibility(visible) {
+  if (!informationSection) {
+    return;
+  }
+
+  informationSection.hidden = !visible;
+}
+
+function parseAndApplyDeviceInfo(text) {
+  if (!text) {
+    return;
+  }
+
+  responseBuffer += text;
+  if (responseBuffer.length > 20_000) {
+    responseBuffer = responseBuffer.slice(-20_000);
+  }
+
+  const hardwareMatch = responseBuffer.match(/@HARDWARE_VERSION:([A-Za-z0-9]+)\.([A-Za-z0-9]+);/g);
+  if (hardwareMatch?.length) {
+    const latest = hardwareMatch[hardwareMatch.length - 1].match(/@HARDWARE_VERSION:([A-Za-z0-9]+)\.([A-Za-z0-9]+);/);
+    if (latest) {
+      setHardwareVersion(`${latest[1]}.${latest[2]}`);
+    }
+  }
+
+  const firmwareMatch = responseBuffer.match(/@FIRMWARE_VERSION:(\d+)\.(\d+)\.(\d+);/g);
+  if (firmwareMatch?.length) {
+    const latest = firmwareMatch[firmwareMatch.length - 1].match(/@FIRMWARE_VERSION:(\d+)\.(\d+)\.(\d+);/);
+    if (latest) {
+      setFirmwareVersion(`${latest[1]}.${latest[2]}.${latest[3]}`);
+    }
+  }
+
+  const serialMatch = responseBuffer.match(/@AFEX_SERIAL_NUMBER:([^;]+);/g);
+  if (serialMatch?.length) {
+    const latest = serialMatch[serialMatch.length - 1].match(/@AFEX_SERIAL_NUMBER:([^;]+);/);
+    if (latest) {
+      const cleanedSerial = latest[1].replace(/\D/g, "");
+      setSerialNumber(cleanedSerial || "N/A");
+    }
+  }
+
+  const workingHoursMatch = responseBuffer.match(/@WORKING_HOURS:DDD=(\d+),HH=(\d+),MM=(\d+);/g);
+  if (workingHoursMatch?.length) {
+    const latest = workingHoursMatch[workingHoursMatch.length - 1].match(/@WORKING_HOURS:DDD=(\d+),HH=(\d+),MM=(\d+);/);
+    if (latest) {
+      const ddd = latest[1].padStart(3, "0");
+      const hh = latest[2].padStart(2, "0");
+      const mm = latest[3].padStart(2, "0");
+      setWorkingHours(`${ddd}:${hh}:${mm}`);
+    }
+  }
+
+  const delayMatch = responseBuffer.match(/@DELAY:([0-9]+(?:\.[0-9]+)?);/g);
+  if (delayMatch?.length) {
+    const latest = delayMatch[delayMatch.length - 1].match(/@DELAY:([0-9]+(?:\.[0-9]+)?);/);
+    if (latest) {
+      setDelay(latest[1]);
+    }
+  }
+}
+
+function filterDeviceInfoFromLog(text) {
+  if (!text) {
+    return "";
+  }
+
+  const metadataPattern =
+    /@HARDWARE_VERSION:[A-Za-z0-9]+\.[A-Za-z0-9]+;|@FIRMWARE_VERSION:\d+\.\d+\.\d+;|@AFEX_SERIAL_NUMBER:[^;\r\n]*;|@WORKING_HOURS:DDD=\d+,HH=\d+,MM=\d+;|@DELAY:[0-9]+(?:\.[0-9]+)?;/g;
+
+  const combined = logFilterCarry + text;
+  let carry = "";
+  let safeText = combined;
+
+  const lastAt = combined.lastIndexOf("@");
+  if (lastAt !== -1) {
+    const tail = combined.slice(lastAt);
+    if (!tail.includes(";")) {
+      safeText = combined.slice(0, lastAt);
+      carry = tail;
+    }
+  }
+
+  logFilterCarry = carry;
+  return safeText.replace(metadataPattern, "");
+}
+
+function refreshButtons() {
+  connectBtn.disabled = isConnected || !isSerialSupported;
+  disconnectBtn.disabled = !isConnected;
+  getLogBtn.disabled = !isConnected || !isSerialSupported;
+  downloadBtn.disabled = captureBuffer.length === 0;
+  refreshBtn.disabled = !isConnected;
+  refreshDebugControls();
+}
+
+function updateCompatibilityWarning() {
+  if (!compatWarning) {
+    return;
+  }
+
+  if (isSerialSupported) {
+    compatWarning.hidden = true;
+    return;
+  }
+
+  compatWarning.hidden = false;
+  setStatus("Browser not compatible. Use Microsoft Edge or Google Chrome.");
+}
+
+function appendToLog(text) {
+  if (!text) {
+    return;
+  }
+
+  appendToDebugTerminal(`[RX] ${text}`);
+
+  parseAndApplyDeviceInfo(text);
+
+  const filteredText = filterDeviceInfoFromLog(text);
+  if (!filteredText) {
+    refreshButtons();
+    return;
+  }
+
+  updateDownloadProgressFromLog(filteredText);
+
+  if (autoDownloadArmed) {
+    logTransferStarted = true;
+    scheduleAutoDownloadCheck();
+  }
+
+  captureBuffer += filteredText;
+
+  let visible = captureBuffer;
+  if (visible.length > MAX_UI_CHARS) {
+    visible = visible.slice(visible.length - MAX_UI_CHARS);
+  }
+
+  logOutput.textContent = visible;
+  logOutput.scrollTop = logOutput.scrollHeight;
+  refreshButtons();
+}
+
+async function readLoop() {
+  if (!port?.readable) {
+    return;
+  }
+
+  keepReading = true;
+  const decoder = new TextDecoder();
+
+  while (port.readable && keepReading) {
+    reader = port.readable.getReader();
+
+    try {
+      while (keepReading) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+
+        if (value) {
+          appendToLog(decoder.decode(value, { stream: true }));
+        }
+      }
+
+      const finalText = decoder.decode();
+      if (finalText) {
+        appendToLog(finalText);
+      }
+    } catch (error) {
+      appendToLog(`\n[Read Error] ${error.message}\n`);
+      break;
+    } finally {
+      reader.releaseLock();
+      reader = null;
+    }
+  }
+}
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+
+
+async function connectPort() {
+  if (!("serial" in navigator)) {
+    setStatus("Web Serial API not supported in this browser.");
+    return;
+  }
+
+  try {
+    const baudRate =  115200;
+    port = await navigator.serial.requestPort({
+      filters: [COMPACT_PANEL_PLUS_FILTER]
+    });
+
+    if (!isCompactPanelPlusPort(port)) {
+      setStatus("Selected device is not COMPACT PANEL PLUS.");
+      port = null;
+      return;
+    }
+
+    await port.open({ baudRate });
+
+    isConnected = true;
+    responseBuffer = "";
+    logFilterCarry = "";
+    setInformationVisibility(true);
+    
+    // appendToLog("[Connected]\n");
+    getWorkingHours();
+    await delay(COMMAND_DELAY_MS);
+    getSerialNumber();
+    await delay(COMMAND_DELAY_MS);
+    getFirmwareVersion();
+    await delay(COMMAND_DELAY_MS);
+    getHardwareVersion();
+    await delay(COMMAND_DELAY_MS);
+    getDelay();
+    await delay(COMMAND_DELAY_MS);
+
+    setStatus(`Connected`);
+    refreshButtons();
+
+    readLoop();
+  } catch (error) {
+    setStatus(`Connect failed: ${error.message}`);
+  }
+}
+
+async function disconnectPort() {
+  if (!port) {
+    return;
+  }
+
+  try {
+    keepReading = false;
+
+    if (reader) {
+      await reader.cancel();
+    }
+
+    if (port.writable) {
+      const writer = port.writable.getWriter();
+      writer.releaseLock();
+    }
+
+    await port.close();
+    // appendToLog("\n[Disconnected]\n");
+  } catch (error) {
+    // appendToLog(`\n[Disconnect Error] ${error.message}\n`);
+  } finally {
+    clearAutoDownloadTimer();
+    autoDownloadArmed = false;
+    logTransferStarted = false;
+    setDownloadProgressVisibility(false);
+    resetDownloadProgressState();
+    port = null;
+    reader = null;
+    isConnected = false;
+    responseBuffer = "";
+    logFilterCarry = "";
+    setInformationVisibility(false);
+    resetInfoValues();
+    setStatus("Disconnected");
+    refreshButtons();
+  }
+}
+
+async function sendExportLogs() {
+  if (!port?.writable) {
+    return;
+  }
+  clearLog();
+  const writer = port.writable.getWriter();
+  try {
+    resetDownloadProgressState();
+    setDownloadProgressVisibility(true);
+    autoDownloadArmed = true;
+    logTransferStarted = false;
+    clearAutoDownloadTimer();
+    const command = "@EXPORT_LOGS;\r\n";
+    const data = new TextEncoder().encode(command);
+    await writer.write(data);
+    // appendToLog(`[TX] EXPORT_LOGS\n`);
+    setStatus("receiving data...");
+    scheduleAutoDownloadCheck();
+  } catch (error) {
+    clearAutoDownloadTimer();
+    autoDownloadArmed = false;
+    logTransferStarted = false;
+    setDownloadProgressVisibility(false);
+    //appendToLog(`\n[Write Error] ${error.message}\n`);
+    setStatus(`Write failed: ${error.message}`);
+  } finally {
+    writer.releaseLock();
+  }
+}
+async function getWorkingHours() {
+    if (!port?.writable) {
+    return;
+  }
+
+  const writer = port.writable.getWriter();
+  try {
+    const command = "@GET_WORKING_HOURS;\r\n";
+    const data = new TextEncoder().encode(command);
+    await writer.write(data);
+    setStatus("receiving working hours...");
+
+  } catch (error) {
+    //appendToLog(`\n[Write Error] ${error.message}\n`);
+    setStatus(`Write failed: ${error.message}`);
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+async function getSerialNumber() {
+    if (!port?.writable) {
+        return;
+    }
+    const writer = port.writable.getWriter();
+  try {
+    const command = "@GET_AFEX_SERIAL_NUMBER;\r\n";
+    const data = new TextEncoder().encode(command);
+    await writer.write(data);
+    setStatus("receiving serial number...");
+
+  } catch (error) {
+    //(`\n[Write Error] ${error.message}\n`);
+    setStatus(`Write failed: ${error.message}`);
+  } finally {
+    writer.releaseLock();
+  }
+    
+}
+
+async function getFirmwareVersion() {
+    if (!port?.writable) {
+        return;
+    }
+    const writer = port.writable.getWriter();
+  try {
+    const command = "@GET_FIRMWARE_VERSION;\r\n";
+    const data = new TextEncoder().encode(command);
+    await writer.write(data);
+    setStatus("receiving firmware version...");
+
+  } catch (error) {
+    //appendToLog(`\n[Write Error] ${error.message}\n`);
+    setStatus(`Write failed: ${error.message}`);
+  } finally {
+    writer.releaseLock();
+  }
+    
+}
+
+async function getHardwareVersion() {
+    if (!port?.writable) {
+        return;
+    }
+    const writer = port.writable.getWriter();
+  try {
+    const command = "@GET_HARDWARE_VERSION;\r\n";
+    const data = new TextEncoder().encode(command);
+    await writer.write(data);
+    setStatus("receiving hardware version...");
+
+  } catch (error) {
+    //appendToLog(`\n[Write Error] ${error.message}\n`);
+    setStatus(`Write failed: ${error.message}`);
+  } finally {
+    writer.releaseLock();
+  }
+    
+}
+
+async function getDelay() {
+    if (!port?.writable) {
+        return;
+    }
+    const writer = port.writable.getWriter();
+  try {
+    const command = "@GET_DELAY;\r\n";
+    const data = new TextEncoder().encode(command);
+    await writer.write(data);
+    setStatus("receiving delay...");
+    } catch (error) {
+    //appendToLog(`\n[Write Error] ${error.message}\n`);
+    setStatus(`Write failed: ${error.message}`);
+  } finally {
+    writer.releaseLock();
+  } 
+}
+
+function clearLog() {
+  captureBuffer = "";
+  logOutput.textContent = "";
+  refreshButtons();
+}
+
+function downloadLog() {
+  if (!captureBuffer) {
+    return;
+  }
+
+  const now = new Date();
+  const pad2 = (value) => String(value).padStart(2, "0");
+  const stamp =
+    `${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}` +
+    `-${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
+
+  const blob = new Blob([captureBuffer], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `compact-panel-log-${stamp}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function refreshdeviceInfo() {
+    getWorkingHours();
+    await delay(COMMAND_DELAY_MS);
+    getSerialNumber();
+    await delay(COMMAND_DELAY_MS);
+    getFirmwareVersion();
+    await delay(COMMAND_DELAY_MS);
+    getHardwareVersion();
+    await delay(COMMAND_DELAY_MS);
+    getDelay();
+    await delay(COMMAND_DELAY_MS);
+
+    setStatus("Refreshed device information.");
+    readLoop();
+    clearLog();
+}
+
+connectBtn.addEventListener("click", connectPort);
+disconnectBtn.addEventListener("click", disconnectPort);
+getLogBtn.addEventListener("click", sendExportLogs);
+clearBtn.addEventListener("click", clearLog);
+downloadBtn.addEventListener("click", downloadLog);
+refreshBtn.addEventListener("click", refreshdeviceInfo);
+
+navigator.serial?.addEventListener("disconnect", async () => {
+  await disconnectPort();
+});
+
+updateCompatibilityWarning();
+setInformationVisibility(false);
+setDownloadProgressVisibility(false);
+setDebugTerminalVisibility(false);
+resetDownloadProgressState();
+resetInfoValues();
+refreshButtons();
+downloadBtn.style.display = "none";
+clearBtn.style.display = "none";
+document.querySelector(".log-section").style.display = "none";
+document.getElementById("debugSection").style.visibility = "hidden";
+
+
+
+debugToggle?.addEventListener("change", (event) => {
+  setDebugTerminalEnabled(Boolean(event.target?.checked));
+});
+
+debugSendBtn?.addEventListener("click", sendCustomDebugCommand);
+debugClearBtn?.addEventListener("click", clearDebugTerminal);
+debugCommandInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    sendCustomDebugCommand();
+  }
+});

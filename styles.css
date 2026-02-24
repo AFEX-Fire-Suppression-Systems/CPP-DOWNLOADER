@@ -1,0 +1,161 @@
+:root {
+  color-scheme: light;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f6f7fb;
+  color: #1f2937;
+}
+
+.container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+h1 {
+  margin-bottom: 0.25rem;
+}
+
+.subtitle {
+  margin-top: 0;
+  color: #4b5563;
+}
+
+.compat-warning {
+  background: #fef3c7;
+  border: 1px solid #f59e0b;
+  color: #7c2d12;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.controls,
+.log-section {
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+
+ .serial-number-row {
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+} 
+
+.download-progress {
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.debug-terminal {
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.debug-input-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+#debugCommandInput {
+  flex: 1;
+  min-width: 220px;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid #9ca3af;
+  border-radius: 6px;
+}
+
+#debugTerminalOutput {
+  margin: 0;
+  min-height: 160px;
+  max-height: 30vh;
+  overflow: auto;
+  background: #0f172a;
+  color: #e5e7eb;
+  border-radius: 6px;
+  padding: 0.75rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.download-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+#downloadProgressBar {
+  width: 100%;
+  height: 14px;
+}
+
+/* .control-row,
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.control-row input {
+  width: 140px;
+  padding: 0.4rem 0.5rem;
+} */
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+button {
+  border: 1px solid #9ca3af;
+  border-radius: 6px;
+  padding: 0.45rem 0.75rem;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+#logOutput {
+  margin: 0;
+  min-height: 360px;
+  max-height: 60vh;
+  overflow: auto;
+  background: #111827;
+  color: #f9fafb;
+  border-radius: 6px;
+  padding: 0.75rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
