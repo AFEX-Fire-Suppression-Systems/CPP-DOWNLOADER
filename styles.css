@@ -133,6 +133,21 @@ h1 {
   margin-bottom: 0.75rem;
 }
 
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.language-row select {
+  min-width: 180px;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #9ca3af;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
 button {
   border: 1px solid #9ca3af;
   border-radius: 6px;

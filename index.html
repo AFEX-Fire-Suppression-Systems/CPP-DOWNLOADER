@@ -25,7 +25,7 @@
         </div> -->
 
         <div class="button-row">
-          <button id="connectBtn">Connect to CPP</button>
+          <button id="connectBtn">Connect</button>
           <button id="disconnectBtn" disabled>Disconnect</button>
           <button id="getLogBtn" disabled>Get Log</button>
           <button id="clearBtn">Clear View</button>
@@ -33,14 +33,24 @@
           <button id="refreshBtn" disabled>Refresh</button>
         </div>
 
+        <div class="control-row language-row">
+          <label for="exportLanguage">Log Language</label>
+          <select id="exportLanguage" disabled>
+            <option value="0" selected>English</option>
+            <option value="1">Spanish</option>
+            <option value="2">Portuguese</option>
+            <option value="3">French</option>
+          </select>
+        </div>
+
         <div class="status-row">
           <strong>Status:</strong>
           <span id="statusText">Disconnected</span>
         </div>
 
-        <div class="status-row"id="debugSection">
+        <div class="status-row"id="debugSection" hidden>
           <label for="debugToggle">
-            <input id="debugToggle" type="ch`eckbox" /> Enable Debug Terminal
+            <input id="debugToggle" type="checkbox" /> Enable Debug Terminal
           </label>
         </div>
       </section>
@@ -77,13 +87,13 @@
         <pre id="debugTerminalOutput" aria-live="polite"></pre>
       </section>
 
-      <section class="log-section">
+      <section class="log-section" hidden>
         <h2>Live Log Output</h2>
         <pre id="logOutput" aria-live="polite"></pre>
       </section>
     </main>
 
-    <div class="app-version" aria-label="Application version">Version 1.0.0</div>
+    <div class="app-version" aria-label="Application version">Version 1.1.0</div>
 
     <script type="module" src="app.js"></script>
   </body>

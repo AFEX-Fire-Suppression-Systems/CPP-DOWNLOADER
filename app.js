@@ -9,6 +9,7 @@ const getLogBtn = document.getElementById("getLogBtn");
 const clearBtn = document.getElementById("clearBtn");
 const downloadBtn = document.getElementById("downloadBtn");
 const refreshBtn = document.getElementById("refreshBtn");
+const exportLanguageSelect = document.getElementById("exportLanguage");
 const debugToggle = document.getElementById("debugToggle");
 const debugTerminalSection = document.getElementById("debugTerminalSection");
 const debugCommandInput = document.getElementById("debugCommandInput");
@@ -338,7 +339,7 @@ function parseAndApplyDeviceInfo(text) {
   if (delayMatch?.length) {
     const latest = delayMatch[delayMatch.length - 1].match(/@DELAY:([0-9]+(?:\.[0-9]+)?);/);
     if (latest) {
-      setDelay(latest[1]);
+      setDelay(`${latest[1]} Sec`);
     }
   }
 }
@@ -374,7 +375,13 @@ function refreshButtons() {
   getLogBtn.disabled = !isConnected || !isSerialSupported;
   downloadBtn.disabled = captureBuffer.length === 0;
   refreshBtn.disabled = !isConnected;
+  exportLanguageSelect.disabled = !isConnected;
   refreshDebugControls();
+}
+
+function getSelectedExportLanguage() {
+  const rawValue = exportLanguageSelect?.value ?? "0";
+  return ["0", "1", "2", "3"].includes(rawValue) ? rawValue : "0";
 }
 
 function updateCompatibilityWarning() {
@@ -391,8 +398,22 @@ function updateCompatibilityWarning() {
   setStatus("Browser not compatible. Use Microsoft Edge or Google Chrome.");
 }
 
-function appendToLog(text) {
+function appendToLog(text, options = {}) {
   if (!text) {
+    return;
+  }
+
+  const { includeInCapture = true } = options;
+
+  if (!includeInCapture) {
+    let visible = (logOutput.textContent || "") + text;
+    if (visible.length > MAX_UI_CHARS) {
+      visible = visible.slice(visible.length - MAX_UI_CHARS);
+    }
+
+    logOutput.textContent = visible;
+    logOutput.scrollTop = logOutput.scrollHeight;
+    refreshButtons();
     return;
   }
 
@@ -564,10 +585,11 @@ async function sendExportLogs() {
     autoDownloadArmed = true;
     logTransferStarted = false;
     clearAutoDownloadTimer();
-    const command = "@EXPORT_LOGS;\r\n";
+    const language = getSelectedExportLanguage();
+    const command = `@EXPORT_LOGS ${language};\r\n`;
     const data = new TextEncoder().encode(command);
     await writer.write(data);
-    // appendToLog(`[TX] EXPORT_LOGS\n`);
+    //appendToLog(`[TX] ${command.replace(/\r\n$/, "")}\n`, { includeInCapture: false });
     setStatus("receiving data...");
     scheduleAutoDownloadCheck();
   } catch (error) {
