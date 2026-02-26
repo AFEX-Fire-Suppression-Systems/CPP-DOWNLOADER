@@ -54,6 +54,8 @@ let transferCurrentIndex = null;
 let debugTerminalEnabled = false;
 let debugTerminalBuffer = "";
 let debugRxCarry = "";
+let rxFrameCarry = "";
+const pendingResponseWaiters = [];
 const isSerialSupported = "serial" in navigator;
 const textEncoder = new TextEncoder();
 
@@ -334,6 +336,135 @@ function setDelay(delay){
     delayText.textContent = delay;
 }
 
+function parseWorkingHoursFrame(frame) {
+  const match = frame.match(/^(?:@WORKING_HOURS:)?D{3,4}=(\d+),HH=(\d+),MM=(\d+)$/i);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    ddd: match[1].padStart(3, "0"),
+    hh: match[2].padStart(2, "0"),
+    mm: match[3].padStart(2, "0")
+  };
+}
+
+function notifyPendingResponseWaiters(frame) {
+  if (!frame || pendingResponseWaiters.length === 0) {
+    return;
+  }
+
+  for (let index = pendingResponseWaiters.length - 1; index >= 0; index -= 1) {
+    const waiter = pendingResponseWaiters[index];
+    let matches = false;
+
+    try {
+      matches = waiter.match(frame);
+    } catch {
+      matches = false;
+    }
+
+    if (!matches) {
+      continue;
+    }
+
+    clearTimeout(waiter.timeoutId);
+    pendingResponseWaiters.splice(index, 1);
+    waiter.resolve(frame);
+  }
+}
+
+function clearPendingResponseWaiters(reason = "Disconnected") {
+  while (pendingResponseWaiters.length > 0) {
+    const waiter = pendingResponseWaiters.pop();
+    clearTimeout(waiter.timeoutId);
+    waiter.reject(new Error(reason));
+  }
+}
+
+function waitForResponseFrame(match, timeoutMs = 3000) {
+  return new Promise((resolve, reject) => {
+    const waiter = {
+      match: typeof match === "function" ? match : () => true,
+      resolve,
+      reject,
+      timeoutId: 0
+    };
+
+    waiter.timeoutId = setTimeout(() => {
+      const index = pendingResponseWaiters.indexOf(waiter);
+      if (index !== -1) {
+        pendingResponseWaiters.splice(index, 1);
+      }
+      reject(new Error("Timed out waiting for response."));
+    }, timeoutMs);
+
+    pendingResponseWaiters.push(waiter);
+  });
+}
+
+function handleIncomingFrame(frame) {
+  if (!frame) {
+    return;
+  }
+
+  const oldHardwareMatch = frame.match(/^@HARDWARE_VERSION:([A-Za-z0-9]+)\.([A-Za-z0-9]+)$/i);
+  if (oldHardwareMatch) {
+    setHardwareVersion(`${oldHardwareMatch[1]}.${oldHardwareMatch[2]}`);
+  }
+
+  const oldFirmwareMatch = frame.match(/^@FIRMWARE_VERSION:(\d+)\.(\d+)\.(\d+)$/i);
+  if (oldFirmwareMatch) {
+    setFirmwareVersion(`${oldFirmwareMatch[1]}.${oldFirmwareMatch[2]}.${oldFirmwareMatch[3]}`);
+  }
+
+  const oldSerialMatch = frame.match(/^@AFEX_SERIAL_NUMBER:([^\r\n]+)$/i);
+  if (oldSerialMatch) {
+    const cleanedSerial = oldSerialMatch[1].replace(/\D/g, "");
+    setSerialNumber(cleanedSerial || "N/A");
+  }
+
+  const oldWorkingHours = parseWorkingHoursFrame(frame);
+  if (oldWorkingHours) {
+    setWorkingHours(`${oldWorkingHours.ddd}:${oldWorkingHours.hh}:${oldWorkingHours.mm}`);
+  }
+
+  const oldDelayMatch = frame.match(/^@DELAY:([0-9]+(?:\.[0-9]+)?)$/i);
+  if (oldDelayMatch) {
+    setDelay(`${oldDelayMatch[1]} Sec`);
+  }
+
+  notifyPendingResponseWaiters(frame);
+}
+
+function processIncomingFrames(text) {
+  if (!text) {
+    return;
+  }
+
+  rxFrameCarry += text.replace(/\r/g, "");
+  let frameStart = 0;
+
+  for (let index = 0; index < rxFrameCarry.length; index += 1) {
+    const char = rxFrameCarry[index];
+    if (char !== ";" && char !== "\n") {
+      continue;
+    }
+
+    const frame = rxFrameCarry.slice(frameStart, index).trim();
+    if (frame) {
+      handleIncomingFrame(frame);
+    }
+
+    frameStart = index + 1;
+  }
+
+  rxFrameCarry = rxFrameCarry.slice(frameStart);
+  if (rxFrameCarry.length > 20_000) {
+    rxFrameCarry = rxFrameCarry.slice(-20_000);
+  }
+}
+
 function resetInfoValues() {
   setWorkingHours("N/A");
   setSerialNumber("N/A");
@@ -348,61 +479,6 @@ function setInformationVisibility(visible) {
   }
 
   informationSection.hidden = !visible;
-}
-
-function parseAndApplyDeviceInfo(text) {
-  if (!text) {
-    return;
-  }
-
-  responseBuffer += text;
-  if (responseBuffer.length > 20_000) {
-    responseBuffer = responseBuffer.slice(-20_000);
-  }
-
-  const hardwareMatch = responseBuffer.match(/@HARDWARE_VERSION:([A-Za-z0-9]+)\.([A-Za-z0-9]+);/g);
-  if (hardwareMatch?.length) {
-    const latest = hardwareMatch[hardwareMatch.length - 1].match(/@HARDWARE_VERSION:([A-Za-z0-9]+)\.([A-Za-z0-9]+);/);
-    if (latest) {
-      setHardwareVersion(`${latest[1]}.${latest[2]}`);
-    }
-  }
-
-  const firmwareMatch = responseBuffer.match(/@FIRMWARE_VERSION:(\d+)\.(\d+)\.(\d+);/g);
-  if (firmwareMatch?.length) {
-    const latest = firmwareMatch[firmwareMatch.length - 1].match(/@FIRMWARE_VERSION:(\d+)\.(\d+)\.(\d+);/);
-    if (latest) {
-      setFirmwareVersion(`${latest[1]}.${latest[2]}.${latest[3]}`);
-    }
-  }
-
-  const serialMatch = responseBuffer.match(/@AFEX_SERIAL_NUMBER:([^;]+);/g);
-  if (serialMatch?.length) {
-    const latest = serialMatch[serialMatch.length - 1].match(/@AFEX_SERIAL_NUMBER:([^;]+);/);
-    if (latest) {
-      const cleanedSerial = latest[1].replace(/\D/g, "");
-      setSerialNumber(cleanedSerial || "N/A");
-    }
-  }
-
-  const workingHoursMatch = responseBuffer.match(/@WORKING_HOURS:DDD=(\d+),HH=(\d+),MM=(\d+);/g);
-  if (workingHoursMatch?.length) {
-    const latest = workingHoursMatch[workingHoursMatch.length - 1].match(/@WORKING_HOURS:DDD=(\d+),HH=(\d+),MM=(\d+);/);
-    if (latest) {
-      const ddd = latest[1].padStart(3, "0");
-      const hh = latest[2].padStart(2, "0");
-      const mm = latest[3].padStart(2, "0");
-      setWorkingHours(`${ddd}:${hh}:${mm}`);
-    }
-  }
-
-  const delayMatch = responseBuffer.match(/@DELAY:([0-9]+(?:\.[0-9]+)?);/g);
-  if (delayMatch?.length) {
-    const latest = delayMatch[delayMatch.length - 1].match(/@DELAY:([0-9]+(?:\.[0-9]+)?);/);
-    if (latest) {
-      setDelay(`${latest[1]} Sec`);
-    }
-  }
 }
 
 function filterDeviceInfoFromLog(text) {
@@ -479,8 +555,7 @@ function appendToLog(text, options = {}) {
   }
 
   appendRxToDebugTerminal(text);
-
-  parseAndApplyDeviceInfo(text);
+  processIncomingFrames(text);
 
   const filteredText = filterDeviceInfoFromLog(text);
   if (!filteredText) {
@@ -547,6 +622,33 @@ function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+async function sendCommandAndWaitForResponse(command, statusMessage, match, timeoutMs = 3000) {
+  const sent = await sendCommand(command, statusMessage);
+  if (!sent) {
+    return null;
+  }
+
+  try {
+    return await waitForResponseFrame(match, timeoutMs);
+  } catch (error) {
+    setStatus(`${statusMessage.replace(/\.\.\.$/, "")} timeout.`);
+    appendToDebugTerminal(`[RX TIMEOUT] ${command.replace(/\r\n$/, "")}\n`);
+    return null;
+  }
+}
+
+async function requestDeviceInfoSequence(statusWhenDone) {
+  await getWorkingHours();
+  await getSerialNumber();
+  await getFirmwareVersion();
+  await getHardwareVersion();
+  await getDelay();
+
+  if (statusWhenDone) {
+    setStatus(statusWhenDone);
+  }
+}
+
 
 
 async function connectPort() {
@@ -572,24 +674,12 @@ async function connectPort() {
     isConnected = true;
     responseBuffer = "";
     logFilterCarry = "";
+    rxFrameCarry = "";
     setInformationVisibility(true);
-    
-    // appendToLog("[Connected]\n");
-    getWorkingHours();
-    await delay(COMMAND_DELAY_MS);
-    getSerialNumber();
-    await delay(COMMAND_DELAY_MS);
-    getFirmwareVersion();
-    await delay(COMMAND_DELAY_MS);
-    getHardwareVersion();
-    await delay(COMMAND_DELAY_MS);
-    getDelay();
-    await delay(COMMAND_DELAY_MS);
-
-    setStatus(`Connected`);
     refreshButtons();
 
     readLoop();
+    await requestDeviceInfoSequence("Connected");
   } catch (error) {
     setStatus(`Connect failed: ${error.message}`);
   }
@@ -627,6 +717,8 @@ async function disconnectPort() {
     isConnected = false;
     responseBuffer = "";
     logFilterCarry = "";
+    rxFrameCarry = "";
+    clearPendingResponseWaiters();
     setInformationVisibility(false);
     resetInfoValues();
     setStatus("Disconnected");
@@ -666,27 +758,92 @@ async function sendExportLogs() {
 }
 async function getWorkingHours() {
   const command = "@GET_WORKING_HOURS;\r\n";
-  await sendCommand(command, "receiving working hours...");
+  const frame = await sendCommandAndWaitForResponse(
+    command,
+    "receiving working hours...",
+    (value) => /^D{3,4}=\d+,HH=\d+,MM=\d+$/i.test(value) || /^@WORKING_HOURS:D{3,4}=\d+,HH=\d+,MM=\d+$/i.test(value)
+  );
+
+  if (!frame) {
+    return false;
+  }
+
+  const parsed = parseWorkingHoursFrame(frame);
+  if (!parsed) {
+    return false;
+  }
+
+  setWorkingHours(`${parsed.ddd}:${parsed.hh}:${parsed.mm}`);
+  return true;
 }
 
 async function getSerialNumber() {
   const command = "@GET_AFEX_SERIAL_NUMBER;\r\n";
-  await sendCommand(command, "receiving serial number...");
+  const frame = await sendCommandAndWaitForResponse(
+    command,
+    "receiving serial number...",
+    (value) => /^\d+$/.test(value) || /^@AFEX_SERIAL_NUMBER:[^\r\n]+$/i.test(value)
+  );
+
+  if (!frame) {
+    return false;
+  }
+
+  const payload = frame.replace(/^@AFEX_SERIAL_NUMBER:/i, "");
+  const cleanedSerial = payload.replace(/\D/g, "");
+  setSerialNumber(cleanedSerial || "N/A");
+  return true;
 }
 
 async function getFirmwareVersion() {
   const command = "@GET_FIRMWARE_VERSION;\r\n";
-  await sendCommand(command, "receiving firmware version...");
+  const frame = await sendCommandAndWaitForResponse(
+    command,
+    "receiving firmware version...",
+    (value) => /^\d+\.\d+\.\d+$/.test(value) || /^@FIRMWARE_VERSION:\d+\.\d+\.\d+$/i.test(value)
+  );
+
+  if (!frame) {
+    return false;
+  }
+
+  const payload = frame.replace(/^@FIRMWARE_VERSION:/i, "");
+  setFirmwareVersion(payload);
+  return true;
 }
 
 async function getHardwareVersion() {
   const command = "@GET_HARDWARE_VERSION;\r\n";
-  await sendCommand(command, "receiving hardware version...");
+  const frame = await sendCommandAndWaitForResponse(
+    command,
+    "receiving hardware version...",
+    (value) => /^[A-Za-z0-9]+\.[A-Za-z0-9]+$/.test(value) || /^@HARDWARE_VERSION:[A-Za-z0-9]+\.[A-Za-z0-9]+$/i.test(value)
+  );
+
+  if (!frame) {
+    return false;
+  }
+
+  const payload = frame.replace(/^@HARDWARE_VERSION:/i, "");
+  setHardwareVersion(payload);
+  return true;
 }
 
 async function getDelay() {
   const command = "@GET_DELAY;\r\n";
-  await sendCommand(command, "receiving delay...");
+  const frame = await sendCommandAndWaitForResponse(
+    command,
+    "receiving delay...",
+    (value) => /^\d+(?:\.\d+)?$/.test(value) || /^@DELAY:\d+(?:\.\d+)?$/i.test(value)
+  );
+
+  if (!frame) {
+    return false;
+  }
+
+  const payload = frame.replace(/^@DELAY:/i, "");
+  setDelay(`${payload} Sec`);
+  return true;
 }
 
 function clearLog() {
@@ -718,19 +875,7 @@ function downloadLog() {
 }
 
 async function refreshdeviceInfo() {
-    getWorkingHours();
-    await delay(COMMAND_DELAY_MS);
-    getSerialNumber();
-    await delay(COMMAND_DELAY_MS);
-    getFirmwareVersion();
-    await delay(COMMAND_DELAY_MS);
-    getHardwareVersion();
-    await delay(COMMAND_DELAY_MS);
-    getDelay();
-    await delay(COMMAND_DELAY_MS);
-
-    setStatus("Refreshed device information.");
-    readLoop();
+  await requestDeviceInfoSequence("Refreshed device information.");
     clearLog();
 }
 
