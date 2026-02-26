@@ -2,6 +2,9 @@ const MAX_UI_CHARS = 500_000;
 
 const COMMAND_DELAY_MS = 20;
 const LOG_TRANSFER_IDLE_MS = 2000;
+const DEBUG_TERMINAL_ENABLED_BY_CODE = false;
+const DEBUG_SHOW_TX_MESSAGES = false;
+const DEBUG_SHOW_RX_MESSAGES = false;
 
 const connectBtn = document.getElementById("connectBtn");
 const disconnectBtn = document.getElementById("disconnectBtn");
@@ -50,7 +53,9 @@ let transferStartIndex = null;
 let transferCurrentIndex = null;
 let debugTerminalEnabled = false;
 let debugTerminalBuffer = "";
+let debugRxCarry = "";
 const isSerialSupported = "serial" in navigator;
+const textEncoder = new TextEncoder();
 
 const MAX_DEBUG_CHARS = 120_000;
 
@@ -95,9 +100,35 @@ function appendToDebugTerminal(text) {
 
 function clearDebugTerminal() {
   debugTerminalBuffer = "";
+  debugRxCarry = "";
   if (debugTerminalOutput) {
     debugTerminalOutput.textContent = "";
   }
+}
+
+function appendRxToDebugTerminal(text) {
+  if (!debugTerminalEnabled || !DEBUG_SHOW_RX_MESSAGES || !text) {
+    return;
+  }
+
+  debugRxCarry += text.replace(/\r/g, "");
+
+  let frameStart = 0;
+  for (let index = 0; index < debugRxCarry.length; index += 1) {
+    const char = debugRxCarry[index];
+    if (char !== ";" && char !== "\n") {
+      continue;
+    }
+
+    const frame = debugRxCarry.slice(frameStart, index + 1).trim();
+    if (frame) {
+      appendToDebugTerminal(`[RX] ${frame}\n`);
+    }
+
+    frameStart = index + 1;
+  }
+
+  debugRxCarry = debugRxCarry.slice(frameStart);
 }
 
 function setDebugTerminalEnabled(enabled) {
@@ -126,13 +157,43 @@ async function sendCustomDebugCommand() {
   const writer = port.writable.getWriter();
   try {
     const command = raw.endsWith("\r\n") ? raw : `${raw}\r\n`;
-    const data = new TextEncoder().encode(command);
+    const data = textEncoder.encode(command);
     await writer.write(data);
-    appendToDebugTerminal(`[TX] ${raw}\n`);
+    if (DEBUG_SHOW_TX_MESSAGES) {
+      appendToDebugTerminal(`[TX] ${raw}\n`);
+    }
     debugCommandInput.value = "";
   } catch (error) {
     appendToDebugTerminal(`[TX ERROR] ${error.message}\n`);
     setStatus(`Write failed: ${error.message}`);
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+async function sendCommand(command, statusMessage) {
+  if (!port?.writable) {
+    return false;
+  }
+
+  const writer = port.writable.getWriter();
+  try {
+    const data = textEncoder.encode(command);
+    await writer.write(data);
+
+    if (DEBUG_SHOW_TX_MESSAGES) {
+      appendToDebugTerminal(`[TX] ${command.replace(/\r\n$/, "")}\n`);
+    }
+
+    if (statusMessage) {
+      setStatus(statusMessage);
+    }
+
+    return true;
+  } catch (error) {
+    appendToDebugTerminal(`[TX ERROR] ${error.message}\n`);
+    setStatus(`Write failed: ${error.message}`);
+    return false;
   } finally {
     writer.releaseLock();
   }
@@ -417,7 +478,7 @@ function appendToLog(text, options = {}) {
     return;
   }
 
-  appendToDebugTerminal(`[RX] ${text}`);
+  appendRxToDebugTerminal(text);
 
   parseAndApplyDeviceInfo(text);
 
@@ -574,11 +635,7 @@ async function disconnectPort() {
 }
 
 async function sendExportLogs() {
-  if (!port?.writable) {
-    return;
-  }
   clearLog();
-  const writer = port.writable.getWriter();
   try {
     resetDownloadProgressState();
     setDownloadProgressVisibility(true);
@@ -587,10 +644,15 @@ async function sendExportLogs() {
     clearAutoDownloadTimer();
     const language = getSelectedExportLanguage();
     const command = `@EXPORT_LOGS ${language};\r\n`;
-    const data = new TextEncoder().encode(command);
-    await writer.write(data);
-    //appendToLog(`[TX] ${command.replace(/\r\n$/, "")}\n`, { includeInCapture: false });
-    setStatus("receiving data...");
+    const sent = await sendCommand(command, "receiving data...");
+    if (!sent) {
+      clearAutoDownloadTimer();
+      autoDownloadArmed = false;
+      logTransferStarted = false;
+      setDownloadProgressVisibility(false);
+      return;
+    }
+    appendToLog(`[TX] ${command.replace(/\r\n$/, "")}\n`, { includeInCapture: false });
     scheduleAutoDownloadCheck();
   } catch (error) {
     clearAutoDownloadTimer();
@@ -600,105 +662,31 @@ async function sendExportLogs() {
     //appendToLog(`\n[Write Error] ${error.message}\n`);
     setStatus(`Write failed: ${error.message}`);
   } finally {
-    writer.releaseLock();
   }
 }
 async function getWorkingHours() {
-    if (!port?.writable) {
-    return;
-  }
-
-  const writer = port.writable.getWriter();
-  try {
-    const command = "@GET_WORKING_HOURS;\r\n";
-    const data = new TextEncoder().encode(command);
-    await writer.write(data);
-    setStatus("receiving working hours...");
-
-  } catch (error) {
-    //appendToLog(`\n[Write Error] ${error.message}\n`);
-    setStatus(`Write failed: ${error.message}`);
-  } finally {
-    writer.releaseLock();
-  }
+  const command = "@GET_WORKING_HOURS;\r\n";
+  await sendCommand(command, "receiving working hours...");
 }
 
 async function getSerialNumber() {
-    if (!port?.writable) {
-        return;
-    }
-    const writer = port.writable.getWriter();
-  try {
-    const command = "@GET_AFEX_SERIAL_NUMBER;\r\n";
-    const data = new TextEncoder().encode(command);
-    await writer.write(data);
-    setStatus("receiving serial number...");
-
-  } catch (error) {
-    //(`\n[Write Error] ${error.message}\n`);
-    setStatus(`Write failed: ${error.message}`);
-  } finally {
-    writer.releaseLock();
-  }
-    
+  const command = "@GET_AFEX_SERIAL_NUMBER;\r\n";
+  await sendCommand(command, "receiving serial number...");
 }
 
 async function getFirmwareVersion() {
-    if (!port?.writable) {
-        return;
-    }
-    const writer = port.writable.getWriter();
-  try {
-    const command = "@GET_FIRMWARE_VERSION;\r\n";
-    const data = new TextEncoder().encode(command);
-    await writer.write(data);
-    setStatus("receiving firmware version...");
-
-  } catch (error) {
-    //appendToLog(`\n[Write Error] ${error.message}\n`);
-    setStatus(`Write failed: ${error.message}`);
-  } finally {
-    writer.releaseLock();
-  }
-    
+  const command = "@GET_FIRMWARE_VERSION;\r\n";
+  await sendCommand(command, "receiving firmware version...");
 }
 
 async function getHardwareVersion() {
-    if (!port?.writable) {
-        return;
-    }
-    const writer = port.writable.getWriter();
-  try {
-    const command = "@GET_HARDWARE_VERSION;\r\n";
-    const data = new TextEncoder().encode(command);
-    await writer.write(data);
-    setStatus("receiving hardware version...");
-
-  } catch (error) {
-    //appendToLog(`\n[Write Error] ${error.message}\n`);
-    setStatus(`Write failed: ${error.message}`);
-  } finally {
-    writer.releaseLock();
-  }
-    
+  const command = "@GET_HARDWARE_VERSION;\r\n";
+  await sendCommand(command, "receiving hardware version...");
 }
 
 async function getDelay() {
-    if (!port?.writable) {
-        return;
-    }
-    const writer = port.writable.getWriter();
-  try {
-    const command = "@GET_DELAY;\r\n";
-    const data = new TextEncoder().encode(command);
-    await writer.write(data);
-    setStatus("receiving delay...");
-    } catch (error) {
-    //appendToLog(`\n[Write Error] ${error.message}\n`);
-    setStatus(`Write failed: ${error.message}`);
-  } finally {
-    writer.releaseLock();
-  } 
+  const command = "@GET_DELAY;\r\n";
+  await sendCommand(command, "receiving delay...");
 }
 
 function clearLog() {
@@ -760,20 +748,18 @@ navigator.serial?.addEventListener("disconnect", async () => {
 updateCompatibilityWarning();
 setInformationVisibility(false);
 setDownloadProgressVisibility(false);
-setDebugTerminalVisibility(false);
+if (debugToggle) {
+  debugToggle.checked = DEBUG_TERMINAL_ENABLED_BY_CODE;
+  debugToggle.hidden = true;
+}
+setDebugTerminalEnabled(DEBUG_TERMINAL_ENABLED_BY_CODE);
 resetDownloadProgressState();
 resetInfoValues();
 refreshButtons();
 downloadBtn.style.display = "none";
 clearBtn.style.display = "none";
-document.querySelector(".log-section").style.display = "none";
-document.getElementById("debugSection").style.visibility = "hidden";
-
-
-
-debugToggle?.addEventListener("change", (event) => {
-  setDebugTerminalEnabled(Boolean(event.target?.checked));
-});
+//document.querySelector(".log-section").style.display = "none";
+//document.getElementById("debugSection").style.visibility = "hidden";
 
 debugSendBtn?.addEventListener("click", sendCustomDebugCommand);
 debugClearBtn?.addEventListener("click", clearDebugTerminal);
